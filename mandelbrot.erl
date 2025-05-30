@@ -1,11 +1,11 @@
-%% @author Bart Agapinan [http://www.mylifeinthevalley.com]
+%% @author Bart Agapinan
 %% @copyright 2008 Bart Agapinan
 %% @doc This file generates a BMP file of the Mandelbrot set at the bit depth and size
 %% the user chooses. To create the BMP, use the command 'mandelbrot:start(BitDepth, Width, Height).'
 %% @version 1.0
 
 -module(mandelbrot).
--export([start/3, clear/0]).
+-export([start/3, clear/0, start/1]).
 
 -define(MIN_REAL, -2.0).
 -define(MAX_REAL, 1.0).
@@ -18,12 +18,12 @@
 %% and return it to a collector with the coordinate of that pixel.
 %% The collector will send the pixels to an image file.
 
-%% Need a few processes: 1 will own the ets data, 
+%% Need a few processes: 1 will own the ets data,
 %% one will spawn calculation processes
 %% one will wait for the ets data to be full and then dump pixel data to a file
 
 %% @proc clear() unregisters all registered processes
-clear() -> 
+clear() ->
   unregister(bmp),
   unregister(file),
   unregister(pixels).
@@ -38,15 +38,24 @@ setup(X, Y, W, H) ->
   calc(X,Y,W,H),
   setup(X-1, Y, W, H).
 
+%% @proc start(Args) - entry point for command line execution
+start([DepthAtom, WidthAtom, HeightAtom]) ->
+  Depth = list_to_integer(atom_to_list(DepthAtom)),
+  W = list_to_integer(atom_to_list(WidthAtom)),
+  H = list_to_integer(atom_to_list(HeightAtom)),
+  start(Depth, W, H).
+
 %% @proc start(Depth, Width, Height)
 start(Depth, W, H) ->
+  rand:seed(exs1024),
   TableId = ets:new(pixels, [ordered_set, public]),
   register(pixels, spawn(fun() -> ets_loop(TableId, Depth, W, H) end)),
   register(bmp, spawn(fun() -> create_bmp() end)),
   register(file, spawn(fun() -> create_file() end)),
   setup(W,H,W,H),
   ets:tab2list(TableId),
-  pixels ! {write}.
+  pixels ! {write},
+  timer:sleep(5000).
 
 %% @proc Im_max(Width, Height) -> Im_num
 im_max(W, H) ->
@@ -67,7 +76,7 @@ calc(X,Y,W,H) ->
   loop(X, Y, {C_re, C_im}, {C_re, C_im}, 0, true).
 
 %% @proc loop(X, Y, C, Z, Iterations, Is_inside)
-loop(X, Y, _C, _Z, ?MAX_LOOPS, Is_inside) -> 
+loop(X, Y, _C, _Z, ?MAX_LOOPS, Is_inside) ->
   case Is_inside of
     false -> pixels ! {X, Y, blank};
     _     -> pixels ! {X, Y, black}
@@ -75,13 +84,13 @@ loop(X, Y, _C, _Z, ?MAX_LOOPS, Is_inside) ->
 loop(X, Y, _C, _Z, Iter, false) ->
   Color = color_for_iter(Iter),
   pixels ! {X, Y, Color};
-loop(X, Y, {C_re, C_im} = C, {Z_re, Z_im}, Iter, Is_inside) -> 
+loop(X, Y, {C_re, C_im} = C, {Z_re, Z_im}, Iter, Is_inside) ->
   Z_re2 = Z_re * Z_re,
   Z_im2 = Z_im * Z_im,
   if
-    (Z_re2 + Z_im2) > 4 -> 
+    (Z_re2 + Z_im2) > 4 ->
       loop(X, Y, C, {Z_re, Z_im}, Iter, false);
-    true -> 
+    true ->
       loop(X, Y, C, {Z_re2 - Z_im2 + C_re, 2 * Z_re * Z_im + C_im}, Iter + 1, Is_inside)
   end.
 
@@ -98,7 +107,7 @@ coord_list(X,Y) ->
   lists:flatten([Ypad, Yint, Xpad, Xint]).
 
 %% @proc pad_num(Int) -> a0{n}
-pad_num(Int) -> 
+pad_num(Int) ->
   if
     Int > 9999 ->
       Pad = "a";
@@ -117,7 +126,7 @@ pad_num(Int) ->
 %% @proc ets_loop(TableId, Depth, Width, Height)
 ets_loop(TableId, D, W, H) ->
   receive
-    {X, Y, black} -> 
+    {X, Y, black} ->
       L = coord_list(X,Y),
       Name = list_to_atom(L),
       ets:insert(TableId, {Name, black}),
@@ -130,7 +139,7 @@ ets_loop(TableId, D, W, H) ->
     {write} ->
       List = ets:tab2list(TableId),
       Pixels = lists:map(fun(X) -> get_pixel(X, D) end, List),
-      bmp ! {data, D, W, H, concat_binary(Pixels)}
+      bmp ! {data, D, W, H, iolist_to_binary(Pixels)}
       %ets_loop(TableId, D, W, H)
   end.
 
@@ -144,14 +153,14 @@ get_pixel({_Pixel, Type}, Depth) ->
     blank ->
       <<Zero:Depth>>;
     Color ->
-      UseColor = Color rem math:pow(2,Depth),
+      UseColor = Color rem trunc(math:pow(2,Depth)),
       <<UseColor:Depth>>
   end.
 
 %% @proc create_bmp() -> Bin
-create_bmp() -> 
+create_bmp() ->
   receive
-    {data, Depth, W, H, Pixel_data} -> 
+    {data, Depth, W, H, Pixel_data} ->
       Filesize = bmp:filesize(Depth, W, H),
       Header = bmp:header(Filesize, Depth),
       Dib_header = bmp:dib_header(Depth, W, H),
@@ -164,7 +173,7 @@ create_bmp() ->
 %% @proc create_file() -> File
 create_file() ->
   receive
-    {write, Data} -> 
+    {write, Data} ->
       {ok, File} = file:open(?FILE_PATH, write),
       file:write(File, [Data]),
       file:close(File)
